@@ -1,0 +1,2261 @@
+// 日记功能管理器
+class DiaryController {
+    constructor() {
+        this.currentDate = DateUtils.getToday();
+        this.currentDiary = null;
+        this.autoSaveTimer = null;
+        this.autoSaveDelay = 1000; // 1秒后自动保存
+        this.heatmapVisible = false; // 热力图显示状态
+        
+        // 拖拽状态管理
+        this.dragState = {
+            draggedElement: null,
+            placeholder: null,
+            dragType: null
+        };
+        
+        this.initializeElements();
+        this.bindEvents();
+        this.loadDiary(this.currentDate);
+        this.initializeHeatmap(); // 初始化热力图
+    }
+    
+    // 初始化DOM元素
+    initializeElements() {
+        this.elements = {
+            currentDate: document.getElementById('current-date'),
+            prevDay: document.getElementById('prev-day'),
+            nextDay: document.getElementById('next-day'),
+            inheritYesterday: document.getElementById('inherit-yesterday'),
+            majorEventsList: document.getElementById('major-events-list'),
+            addMajorEvent: document.getElementById('add-major-event'),
+            todoList: document.getElementById('todo-list'),
+            addTodo: document.getElementById('add-todo'),
+            completedList: document.getElementById('completed-list'),
+            addCompleted: document.getElementById('add-completed'),
+            reflectionText: document.getElementById('reflection-text'),
+            exportDiary: document.getElementById('export-diary-range'),
+            clearAll: document.getElementById('clear-diary-range')
+        };
+        
+        // 设置日期输入框的最大值为今天
+        const today = DateUtils.getToday();
+        this.elements.currentDate.max = today;
+    }
+    
+    // 绑定事件
+    bindEvents() {
+        // 日期导航
+        this.elements.currentDate.addEventListener('change', (e) => {
+            const selectedDate = e.target.value;
+            if (selectedDate && ValidationUtils.isValidDate(selectedDate)) {
+                // 检查是否为未来日期
+                const today = DateUtils.getToday();
+                if (selectedDate > today) {
+                    MessageUtils.showError('不能选择未来日期，只能查看当前及过去的日记');
+                    this.elements.currentDate.value = this.currentDate; // 重置为当前日期
+                    return;
+                }
+                this.loadDiary(selectedDate);
+            }
+        });
+        
+        this.elements.prevDay.addEventListener('click', () => {
+            const prevDate = DateUtils.addDays(this.currentDate, -1);
+            this.loadDiary(prevDate);
+        });
+        
+        this.elements.nextDay.addEventListener('click', () => {
+            const nextDate = DateUtils.addDays(this.currentDate, 1);
+            const today = DateUtils.getToday();
+            
+            // 检查是否为未来日期
+            if (nextDate > today) {
+                MessageUtils.showInfo('已是最新日期，不能查看未来的日记');
+                return;
+            }
+            
+            this.loadDiary(nextDate);
+        });
+        
+        // 继承昨日大事
+        this.elements.inheritYesterday.addEventListener('click', () => {
+            this.inheritYesterdayEvents();
+        });
+        
+        // 添加按钮
+        this.elements.addMajorEvent.addEventListener('click', () => {
+            this.addMajorEvent();
+        });
+        
+        this.elements.addTodo.addEventListener('click', () => {
+            this.addTodo();
+        });
+        
+        this.elements.addCompleted.addEventListener('click', () => {
+            this.addCompleted();
+        });
+        
+        // 感悟文本区域
+        this.elements.reflectionText.addEventListener('input', debounce(() => {
+            this.scheduleAutoSave();
+        }, 300));
+        
+        // 导出和清空
+        this.elements.exportDiary.addEventListener('click', () => {
+            this.showExportModal();
+        });
+        
+        this.elements.clearAll.addEventListener('click', () => {
+            this.showClearModal();
+        });
+    }
+    
+    // 加载指定日期的日记
+    loadDiary(date) {
+        // 验证日期格式
+        if (!date || !ValidationUtils.isValidDate(date)) {
+            console.error('Invalid date:', date);
+            return;
+        }
+        
+        // 保存当前日记
+        if (this.currentDiary && this.currentDate) {
+            this.saveDiary();
+        }
+        
+        this.currentDate = date;
+        this.currentDiary = diaryManager.getDiary(date);
+        
+        // 自动创建日常任务
+        this.createDailyTodos();
+        
+        // 更新UI
+        this.elements.currentDate.value = date;
+        this.renderDiary();
+        
+        // 更新页面标题
+        document.title = `日常记录 - ${DateUtils.getChineseDate(date)}`;
+        
+        // 更新导航按钮状态
+        this.updateNavigationButtons();
+        
+        console.log('Loaded diary for date:', date);
+    }
+    
+    // 更新导航按钮状态
+    updateNavigationButtons() {
+        const today = DateUtils.getToday();
+        const isToday = this.currentDate === today;
+        
+        // 如果当前是今天，禁用下一天按钮
+        this.elements.nextDay.disabled = isToday;
+        if (isToday) {
+            this.elements.nextDay.style.opacity = '0.5';
+            this.elements.nextDay.style.cursor = 'not-allowed';
+            this.elements.nextDay.title = '不能查看未来日记';
+        } else {
+            this.elements.nextDay.style.opacity = '1';
+            this.elements.nextDay.style.cursor = 'pointer';
+            this.elements.nextDay.title = '下一天';
+        }
+    }
+    
+    // 渲染日记内容
+    renderDiary() {
+        this.renderMajorEvents();
+        this.renderTodos();
+        this.renderCompleted();
+        this.renderReflection();
+    }
+    
+    // 渲染今日大事
+    renderMajorEvents() {
+        DOMUtils.clearElement(this.elements.majorEventsList);
+        
+        // 为容器添加拖拽支持
+        this.addContainerDragSupport(this.elements.majorEventsList, 'majorEvent');
+        
+        if (this.currentDiary.majorEvents.length === 0) {
+            this.elements.majorEventsList.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">📋</div>
+                    <p>还没有记录大事件</p>
+                </div>
+            `;
+            return;
+        }
+        
+        this.currentDiary.majorEvents.forEach(event => {
+            const eventElement = this.createEventElement(event, 'majorEvent');
+            this.elements.majorEventsList.appendChild(eventElement);
+        });
+    }
+    
+    // 渲染待办事项
+    renderTodos() {
+        DOMUtils.clearElement(this.elements.todoList);
+        
+        // 为容器添加拖拽支持
+        this.addContainerDragSupport(this.elements.todoList, 'todo');
+        
+        if (this.currentDiary.todos.length === 0) {
+            this.elements.todoList.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">✅</div>
+                    <p>还没有待办事项</p>
+                </div>
+            `;
+            return;
+        }
+        
+        this.currentDiary.todos.forEach(todo => {
+            const todoElement = this.createTodoElement(todo);
+            this.elements.todoList.appendChild(todoElement);
+        });
+    }
+    
+    // 渲染完成事项
+    renderCompleted() {
+        DOMUtils.clearElement(this.elements.completedList);
+        
+        // 为容器添加拖拽支持
+        this.addContainerDragSupport(this.elements.completedList, 'completed');
+        
+        if (this.currentDiary.completed.length === 0) {
+            this.elements.completedList.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">🎉</div>
+                    <p>还没有完成的事项</p>
+                </div>
+            `;
+            return;
+        }
+        
+        this.currentDiary.completed.forEach(completed => {
+            const completedElement = this.createCompletedElement(completed);
+            this.elements.completedList.appendChild(completedElement);
+        });
+    }
+    
+    // 渲染感悟
+    renderReflection() {
+        this.elements.reflectionText.value = this.currentDiary.reflection || '';
+    }
+    
+    // 创建事件元素
+    createEventElement(event, type) {
+        const eventDiv = DOMUtils.createElement('div', 'list-item');
+        
+        // 添加拖拽属性
+        eventDiv.draggable = true;
+        eventDiv.dataset.eventId = event.id;
+        eventDiv.dataset.eventType = type;
+        
+        // 检查文本是否过长（超过50个字符）
+        const isLongText = event.text.length > 50;
+        const needsExpansion = isLongText;
+        
+        eventDiv.innerHTML = `
+            <div class="drag-handle">⋮⋮</div>
+            <input type="text" value="${StringUtils.escapeHtml(event.text)}" 
+                   placeholder="输入大事件..." 
+                   data-id="${event.id}"
+                   title="${needsExpansion ? StringUtils.escapeHtml(event.text) : ''}">
+            ${needsExpansion ? '<button class="text-expand-btn" onclick="diaryController.toggleTextExpansion(this)">...</button>' : ''}
+            <button class="item-btn" onclick="diaryController.showEventDetails('${event.id}')">详情</button>
+            <button class="item-btn danger" onclick="diaryController.removeEvent('${event.id}', '${type}')">删除</button>
+        `;
+        
+        // 绑定拖拽事件
+        this.bindDragEvents(eventDiv, type);
+        
+        // 绑定输入事件
+        const input = eventDiv.querySelector('input');
+        input.addEventListener('input', debounce(() => {
+            this.updateEventText(event.id, input.value, type);
+            // 检查是否需要更新展开按钮
+            this.updateTextExpansionButton(eventDiv, input.value);
+        }, 300));
+        
+        // 添加悬停提示功能
+        if (needsExpansion) {
+            this.addTextTooltip(input);
+        }
+        
+        return eventDiv;
+    }
+    
+    // 创建待办事项元素
+    createTodoElement(todo) {
+        const todoDiv = DOMUtils.createElement('div', 'list-item');
+        if (todo.completed) {
+            todoDiv.classList.add('completed');
+        }
+        
+        // 添加拖拽属性
+        todoDiv.draggable = true;
+        todoDiv.dataset.todoId = todo.id;
+        todoDiv.dataset.eventType = 'todo';
+        
+        // 检查文本是否过长
+        const isLongText = todo.text.length > 50;
+        const needsExpansion = isLongText;
+        
+        todoDiv.innerHTML = `
+            <div class="drag-handle">⋮⋮</div>
+            <input type="checkbox" ${todo.completed ? 'checked' : ''} 
+                   onchange="diaryController.toggleTodo('${todo.id}')">
+            <input type="text" value="${StringUtils.escapeHtml(todo.text)}" 
+                   placeholder="输入待办事项..." 
+                   data-id="${todo.id}"
+                   title="${needsExpansion ? StringUtils.escapeHtml(todo.text) : ''}">
+            ${needsExpansion ? '<button class="text-expand-btn" onclick="diaryController.toggleTextExpansion(this)">...</button>' : ''}
+            <label class="daily-checkbox" title="标记为日常任务，每天自动创建">
+                <input type="checkbox" ${todo.isDaily ? 'checked' : ''} 
+                       onchange="diaryController.toggleTodoDaily('${todo.id}')">
+                <span class="daily-label">日常</span>
+            </label>
+            <select onchange="diaryController.updateTodoRelation('${todo.id}', this.value)">
+                <option value="">选择关联大事</option>
+                ${this.getMajorEventsOptions(todo.relatedEventId)}
+            </select>
+            <button class="item-btn danger" onclick="diaryController.removeTodo('${todo.id}')">删除</button>
+        `;
+        
+        // 绑定拖拽事件
+        this.bindDragEvents(todoDiv, 'todo');
+        
+        // 绑定输入事件
+        const input = todoDiv.querySelector('input[type="text"]');
+        input.addEventListener('input', debounce(() => {
+            this.updateTodoText(todo.id, input.value);
+            this.updateTextExpansionButton(todoDiv, input.value);
+        }, 300));
+        
+        // 添加悬停提示功能
+        if (needsExpansion) {
+            this.addTextTooltip(input);
+        }
+        
+        return todoDiv;
+    }
+    
+    // 创建完成事项元素
+    createCompletedElement(completed) {
+        const completedDiv = DOMUtils.createElement('div', 'list-item completed');
+        
+        // 添加拖拽属性
+        completedDiv.draggable = true;
+        completedDiv.dataset.completedId = completed.id;
+        completedDiv.dataset.eventType = 'completed';
+        
+        // 检查文本是否过长
+        const isLongText = completed.text.length > 50;
+        const needsExpansion = isLongText;
+        
+        completedDiv.innerHTML = `
+            <div class="drag-handle">⋮⋮</div>
+            <span class="completed-icon">✓</span>
+            <input type="text" value="${StringUtils.escapeHtml(completed.text)}" 
+                   placeholder="输入完成事项..." 
+                   data-id="${completed.id}"
+                   title="${needsExpansion ? StringUtils.escapeHtml(completed.text) : ''}">
+            ${needsExpansion ? '<button class="text-expand-btn" onclick="diaryController.toggleTextExpansion(this)">...</button>' : ''}
+            <select onchange="diaryController.updateCompletedRelation('${completed.id}', this.value)">
+                <option value="">选择关联待办</option>
+                ${this.getTodosOptions(completed.relatedTodoId)}
+            </select>
+            <button class="item-btn danger" onclick="diaryController.removeCompleted('${completed.id}')">删除</button>
+        `;
+        
+        // 绑定拖拽事件
+        this.bindDragEvents(completedDiv, 'completed');
+        
+        // 绑定输入事件
+        const input = completedDiv.querySelector('input[type="text"]');
+        input.addEventListener('input', debounce(() => {
+            this.updateCompletedText(completed.id, input.value);
+            this.updateTextExpansionButton(completedDiv, input.value);
+        }, 300));
+        
+        // 添加悬停提示功能
+        if (needsExpansion) {
+            this.addTextTooltip(input);
+        }
+        
+        return completedDiv;
+    }
+    
+    // 绑定拖拽事件
+    bindDragEvents(element, type) {
+        element.addEventListener('dragstart', (e) => {
+            this.dragState.draggedElement = element;
+            this.dragState.dragType = type;
+            element.classList.add('dragging');
+            
+            // 创建占位符
+            this.dragState.placeholder = document.createElement('div');
+            this.dragState.placeholder.className = 'drag-placeholder';
+            this.dragState.placeholder.textContent = '放置在这里';
+            
+            // 设置拖拽数据
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', element.dataset.eventId || element.dataset.todoId || element.dataset.completedId);
+            
+            console.log('=== 开始拖拽 ===');
+            console.log('拖拽元素类型 (传入参数):', type);
+            console.log('拖拽元素类型 (dataset.eventType):', element.dataset.eventType);
+            console.log('拖拽元素ID:', element.dataset.eventId || element.dataset.todoId || element.dataset.completedId);
+            console.log('拖拽元素内容:', element.querySelector('input[type="text"]')?.value);
+            console.log('拖拽触发源:', e.target);
+            console.log('===============');
+        });
+        
+        element.addEventListener('dragend', () => {
+            element.classList.remove('dragging');
+            if (this.dragState.placeholder && this.dragState.placeholder.parentNode) {
+                this.dragState.placeholder.remove();
+            }
+            
+            // 清理拖拽状态
+            this.dragState.draggedElement = null;
+            this.dragState.placeholder = null;
+            this.dragState.dragType = null;
+            
+            console.log('结束拖拽');
+        });
+        
+        element.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            
+            // 确保只在同类型元素间拖拽 - 通过 data-event-type 属性检查
+            const targetType = element.dataset.eventType;
+            const draggedType = this.dragState.draggedElement ? this.dragState.draggedElement.dataset.eventType : null;
+            
+            if (this.dragState.draggedElement && this.dragState.draggedElement !== element && 
+                draggedType === targetType && this.dragState.placeholder) {
+                
+                const container = element.parentNode;
+                const mouseY = e.clientY;
+                const elementRect = element.getBoundingClientRect();
+                const elementMiddle = elementRect.top + elementRect.height / 2;
+                
+                // 移除之前的占位符
+                if (this.dragState.placeholder.parentNode) {
+                    this.dragState.placeholder.remove();
+                }
+                
+                if (mouseY < elementMiddle) {
+                    // 插入到元素上方
+                    container.insertBefore(this.dragState.placeholder, element);
+                } else {
+                    // 插入到元素下方
+                    container.insertBefore(this.dragState.placeholder, element.nextSibling);
+                }
+                
+                console.log('拖拽悬停:', mouseY < elementMiddle ? '上方' : '下方', '类型匹配:', draggedType, '==', targetType);
+            }
+        });
+        
+        element.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            console.log('📦 Drop事件触发 - 目标元素:', element.querySelector('input[type="text"]')?.value?.substring(0, 15));
+            
+            const targetType = element.dataset.eventType;
+            const draggedType = this.dragState.draggedElement ? this.dragState.draggedElement.dataset.eventType : null;
+            
+            console.log('🔍 类型检查:', {
+                draggedType: draggedType,
+                targetType: targetType,
+                匹配: draggedType === targetType,
+                拖拽元素: this.dragState.draggedElement ? '存在' : '缺失',
+                占位符: this.dragState.placeholder ? '存在' : '缺失'
+            });
+            
+            if (this.dragState.draggedElement && this.dragState.draggedElement !== element && 
+                this.dragState.placeholder && draggedType === targetType) {
+                
+                const container = this.dragState.placeholder.parentNode;
+                
+                if (container) {
+                    console.log('✅ 执行拖拽放置...');
+                    
+                    // 在占位符位置插入拖拽元素
+                    container.insertBefore(this.dragState.draggedElement, this.dragState.placeholder);
+                    this.dragState.placeholder.remove();
+                    
+                    // 更新数据顺序
+                    this.updateItemOrder(container, targetType);
+                    
+                    console.log('✅ 拖拽放置完成');
+                } else {
+                    console.log('❌ 占位符没有父容器');
+                }
+            } else {
+                console.log('❌ Drop条件不满足');
+                if (!this.dragState.draggedElement) console.log('  - 拖拽元素不存在');
+                if (!this.dragState.placeholder) console.log('  - 占位符不存在');
+                if (draggedType !== targetType) console.log('  - 类型不匹配');
+                if (this.dragState.draggedElement === element) console.log('  - 拖拽到自身');
+            }
+        });
+    }
+    
+    // 更新项目顺序
+    updateItemOrder(container, eventType) {
+        const items = Array.from(container.querySelectorAll('.list-item:not(.drag-placeholder)'));
+        
+        console.log('更新项目顺序:', eventType, '项目数量:', items.length);
+        
+        if (eventType === 'majorEvent') {
+            const newOrder = [];
+            items.forEach(item => {
+                const eventId = item.dataset.eventId;
+                const event = this.currentDiary.majorEvents.find(e => e.id === eventId);
+                if (event) {
+                    newOrder.push(event);
+                }
+            });
+            this.currentDiary.majorEvents = newOrder;
+            console.log('更新后的大事顺序:', newOrder.map(e => e.text.substring(0, 10)));
+        } else if (eventType === 'todo') {
+            const newOrder = [];
+            items.forEach(item => {
+                const todoId = item.dataset.todoId;
+                const todo = this.currentDiary.todos.find(t => t.id === todoId);
+                if (todo) {
+                    newOrder.push(todo);
+                }
+            });
+            this.currentDiary.todos = newOrder;
+            console.log('更新后的待办顺序:', newOrder.map(t => t.text.substring(0, 10)));
+        } else if (eventType === 'completed') {
+            const newOrder = [];
+            items.forEach(item => {
+                const completedId = item.dataset.completedId;
+                const completed = this.currentDiary.completed.find(c => c.id === completedId);
+                if (completed) {
+                    newOrder.push(completed);
+                }
+            });
+            this.currentDiary.completed = newOrder;
+            console.log('更新后的完成顺序:', newOrder.map(c => c.text.substring(0, 10)));
+        }
+        
+        // 保存更改
+        this.scheduleAutoSave();
+        
+        // 显示成功提示
+        this.showDragSuccessIndicator();
+        
+        console.log('✅ 拖拽顺序更新完成');
+    }
+    
+    // 显示拖拽成功指示器
+    showDragSuccessIndicator() {
+        const indicator = document.createElement('div');
+        indicator.className = 'drag-success-indicator';
+        indicator.innerHTML = '<span class="success-icon">✓</span> 顺序已更新';
+        
+        document.body.appendChild(indicator);
+        
+        // 显示动画
+        setTimeout(() => {
+            indicator.classList.add('show');
+        }, 10);
+        
+        // 2秒后隐藏
+        setTimeout(() => {
+            indicator.classList.remove('show');
+            setTimeout(() => {
+                if (indicator.parentNode) {
+                    indicator.remove();
+                }
+            }, 300);
+        }, 2000);
+    }
+    
+    // 为容器添加拖拽支持
+    addContainerDragSupport(container, expectedType) {
+        if (container.dataset.dragSupported) {
+            return; // 已经添加过支持
+        }
+        
+        container.dataset.dragSupported = 'true';
+        container.dataset.containerType = expectedType; // 保存容器类型
+        
+        container.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            
+            // 如果拖拽到容器的空白区域
+            const draggedType = this.dragState.draggedElement ? this.dragState.draggedElement.dataset.eventType : null;
+            
+            if (this.dragState.draggedElement && draggedType === expectedType && 
+                this.dragState.placeholder && e.target === container) {
+                
+                // 移除之前的占位符
+                if (this.dragState.placeholder.parentNode) {
+                    this.dragState.placeholder.remove();
+                }
+                
+                // 将占位符添加到容器末尾
+                container.appendChild(this.dragState.placeholder);
+                
+                console.log('拖拽到容器空白区域, 类型匹配:', draggedType, '==', expectedType);
+            }
+        });
+        
+        container.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const draggedType = this.dragState.draggedElement ? this.dragState.draggedElement.dataset.eventType : null;
+            
+            console.log('📦 容器Drop事件触发:', {
+                目标: e.target === container ? '容器本身' : '子元素',
+                拖拽类型: draggedType,
+                期望类型: expectedType,
+                目标元素: e.target.className || e.target.tagName
+            });
+            
+            console.log('🔍 容器Drop条件检查:', {
+                '目标是容器': e.target === container,
+                '拖拽元素存在': !!this.dragState.draggedElement,
+                '类型匹配': draggedType === expectedType,
+                '占位符存在': !!this.dragState.placeholder,
+                '占位符父容器存在': !!(this.dragState.placeholder && this.dragState.placeholder.parentNode)
+            });
+            
+            // 放宽条件：不仅限于直接拖拽到容器，也支持拖拽到容器内的空白区域
+            const isValidTarget = e.target === container || 
+                                 (e.target.parentNode === container && !e.target.classList.contains('list-item'));
+            
+            if (isValidTarget && this.dragState.draggedElement && 
+                draggedType === expectedType && this.dragState.placeholder) {
+                
+                const containerElement = this.dragState.placeholder.parentNode;
+                
+                if (containerElement) {
+                    console.log('✅ 执行容器拖拽放置...');
+                    
+                    // 在占位符位置插入拖拽元素
+                    containerElement.insertBefore(this.dragState.draggedElement, this.dragState.placeholder);
+                    this.dragState.placeholder.remove();
+                    
+                    // 更新数据顺序
+                    this.updateItemOrder(containerElement, draggedType);
+                    
+                    console.log('✅ 容器拖拽放置完成');
+                } else {
+                    console.log('❌ 容器中的占位符没有父容器');
+                }
+            } else {
+                console.log('❌ 容器Drop条件不满足，原因:');
+                if (!isValidTarget) console.log('  - 目标不是有效的容器区域');
+                if (!this.dragState.draggedElement) console.log('  - 拖拽元素不存在');
+                if (draggedType !== expectedType) console.log('  - 类型不匹配:', draggedType, '!=', expectedType);
+                if (!this.dragState.placeholder) console.log('  - 占位符不存在');
+            }
+        });
+    }
+    
+    getMajorEventsOptions(selectedId = '') {
+        return this.currentDiary.majorEvents.map(event => 
+            `<option value="${event.id}" ${event.id === selectedId ? 'selected' : ''}>
+                ${StringUtils.truncate(event.text, 20)}
+            </option>`
+        ).join('');
+    }
+    
+    // 获取待办事项选项
+    getTodosOptions(selectedId = '') {
+        return this.currentDiary.todos.map(todo => 
+            `<option value="${todo.id}" ${todo.id === selectedId ? 'selected' : ''}>
+                ${StringUtils.truncate(todo.text, 20)}
+            </option>`
+        ).join('');
+    }
+    
+    // 添加大事件
+    addMajorEvent(text = '') {
+        const event = {
+            id: StringUtils.generateId(),
+            text: text,
+            createdAt: new Date().toISOString()
+        };
+        
+        this.currentDiary.majorEvents.push(event);
+        this.renderMajorEvents();
+        this.scheduleAutoSave();
+        
+        // 聚焦到新添加的输入框
+        setTimeout(() => {
+            const inputs = this.elements.majorEventsList.querySelectorAll('input[type="text"]');
+            const lastInput = inputs[inputs.length - 1];
+            if (lastInput) {
+                lastInput.focus();
+            }
+        }, 100);
+    }
+    
+    // 添加待办事项
+    addTodo(text = '') {
+        const todo = {
+            id: StringUtils.generateId(),
+            text: text,
+            completed: false,
+            isDaily: false, // 默认不是日常任务
+            relatedEventId: '',
+            createdAt: new Date().toISOString()
+        };
+        
+        this.currentDiary.todos.push(todo);
+        this.renderTodos();
+        this.scheduleAutoSave();
+        
+        // 聚焦到新添加的输入框
+        setTimeout(() => {
+            const inputs = this.elements.todoList.querySelectorAll('input[type="text"]');
+            const lastInput = inputs[inputs.length - 1];
+            if (lastInput) {
+                lastInput.focus();
+            }
+        }, 100);
+    }
+    
+    // 添加完成事项
+    addCompleted(text = '') {
+        const completed = {
+            id: StringUtils.generateId(),
+            text: text,
+            relatedTodoId: '',
+            completedAt: new Date().toISOString()
+        };
+        
+        this.currentDiary.completed.push(completed);
+        this.renderCompleted();
+        this.scheduleAutoSave();
+        
+        // 聚焦到新添加的输入框
+        setTimeout(() => {
+            const inputs = this.elements.completedList.querySelectorAll('input[type="text"]');
+            const lastInput = inputs[inputs.length - 1];
+            if (lastInput) {
+                lastInput.focus();
+            }
+        }, 100);
+    }
+    
+    // 显示事件详情
+    showEventDetails(eventId) {
+        const event = this.currentDiary.majorEvents.find(e => e.id === eventId);
+        if (!event) {
+            MessageUtils.showError('找不到指定的事件');
+            return;
+        }
+        
+        // 获取关联的事件项
+        const relatedItems = this.getRelatedItems(eventId);
+        
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+            <div class="modal-content event-details-modal">
+                <div class="modal-header">
+                    <h2>事件详情</h2>
+                    <button class="modal-close" onclick="this.parentElement.parentElement.parentElement.remove()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="event-detail-section">
+                        <label>事件内容：</label>
+                        <textarea id="event-detail-text" placeholder="输入事件内容...">${StringUtils.escapeHtml(event.text)}</textarea>
+                    </div>
+                    <div class="event-detail-section">
+                        <label>创建时间：</label>
+                        <div class="detail-info">${DateUtils.getChineseDate(event.createdAt.split('T')[0])} ${event.createdAt.split('T')[1]?.split('.')[0] || ''}</div>
+                    </div>
+                    <div class="event-detail-section">
+                        <label>相关链接：</label>
+                        <input type="url" id="event-detail-link" placeholder="输入相关链接 (http://... 或 https://...)" value="${event.link || ''}">
+                        <button class="link-test-btn" onclick="diaryController.openEventLink()" style="margin-top: 8px;">跳转链接</button>
+                    </div>
+                    ${relatedItems.todos.length > 0 || relatedItems.completed.length > 0 ? `
+                        <div class="event-detail-section">
+                            <label>关联事件：</label>
+                            <div class="related-items">
+                                ${relatedItems.todos.length > 0 ? `
+                                    <div class="related-category">
+                                        <h4>待办事项</h4>
+                                        <div class="related-list">
+                                            ${relatedItems.todos.map(todo => `
+                                                <div class="related-item ${todo.completed ? 'completed' : 'pending'}">
+                                                    <span class="status-icon">${todo.completed ? '✓' : '○'}</span>
+                                                    <span class="item-text">${StringUtils.escapeHtml(todo.text)}</span>
+                                                    <span class="item-date">${DateUtils.getChineseDate(todo.date)}</span>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                ` : ''}
+                                ${relatedItems.completed.length > 0 ? `
+                                    <div class="related-category">
+                                        <h4>已完成事项</h4>
+                                        <div class="related-list">
+                                            ${relatedItems.completed.map(item => `
+                                                <div class="related-item completed">
+                                                    <span class="status-icon">✓</span>
+                                                    <span class="item-text">${StringUtils.escapeHtml(item.text)}</span>
+                                                    <span class="item-date">${DateUtils.getChineseDate(item.date)}</span>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+                <div class="modal-footer">
+                    <button class="action-btn" onclick="diaryController.saveEventDetails('${eventId}')">保存</button>
+                    <button class="action-btn" onclick="this.parentElement.parentElement.parentElement.remove()">取消</button>
+                </div>
+            </div>
+        `;
+        
+        // 点击背景关闭
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.remove();
+            }
+        });
+        
+        document.body.appendChild(modal);
+        
+        // 自动聚焦到文本框
+        setTimeout(() => {
+            document.getElementById('event-detail-text').focus();
+        }, 100);
+    }
+    
+    // 获取与事件关联的事件项
+    getRelatedItems(eventId) {
+        const allDiaries = diaryManager.getAllDiaries();
+        const relatedTodos = [];
+        const relatedCompleted = [];
+        
+        // 遍历所有日记查找关联项
+        Object.entries(allDiaries).forEach(([date, diary]) => {
+            // 查找关联的待办事项
+            diary.todos.forEach(todo => {
+                if (todo.relatedEventId === eventId) {
+                    relatedTodos.push({
+                        ...todo,
+                        date: date
+                    });
+                }
+            });
+            
+            // 查找关联的完成事项（通过待办事项间接关联）
+            diary.completed.forEach(completed => {
+                // 查找该完成事项关联的待办事项
+                const relatedTodo = diary.todos.find(t => t.id === completed.relatedTodoId);
+                if (relatedTodo && relatedTodo.relatedEventId === eventId) {
+                    relatedCompleted.push({
+                        ...completed,
+                        date: date
+                    });
+                }
+            });
+        });
+        
+        return {
+            todos: relatedTodos.sort((a, b) => b.date.localeCompare(a.date)), // 按日期降序
+            completed: relatedCompleted.sort((a, b) => b.date.localeCompare(a.date))
+        };
+    }
+    
+    // 跳转事件链接
+    openEventLink() {
+        const linkInput = document.getElementById('event-detail-link');
+        const link = linkInput.value.trim();
+        
+        if (!link) {
+            MessageUtils.showInfo('请先输入链接');
+            return;
+        }
+        
+        if (!link.startsWith('http://') && !link.startsWith('https://')) {
+            MessageUtils.showError('链接必须以 http:// 或 https:// 开头');
+            return;
+        }
+        
+        try {
+            window.open(link, '_blank', 'noopener,noreferrer');
+            MessageUtils.showSuccess('链接跳转成功');
+        } catch (error) {
+            MessageUtils.showError('链接打开失败：' + error.message);
+        }
+    }
+    
+    // 保存事件详情
+    saveEventDetails(eventId) {
+        const event = this.currentDiary.majorEvents.find(e => e.id === eventId);
+        if (!event) {
+            MessageUtils.showError('找不到指定的事件');
+            return;
+        }
+        
+        const text = document.getElementById('event-detail-text').value.trim();
+        const link = document.getElementById('event-detail-link').value.trim();
+        
+        if (!text) {
+            MessageUtils.showError('事件内容不能为空');
+            return;
+        }
+        
+        // 验证链接格式
+        if (link && !link.startsWith('http://') && !link.startsWith('https://')) {
+            MessageUtils.showError('链接必须以 http:// 或 https:// 开头');
+            return;
+        }
+        
+        // 更新事件数据
+        event.text = text;
+        event.link = link;
+        event.updatedAt = new Date().toISOString();
+        
+        // 重新渲染列表
+        this.renderMajorEvents();
+        this.scheduleAutoSave();
+        
+        // 关闭模态框
+        document.querySelector('.modal-overlay').remove();
+        
+        MessageUtils.showSuccess('事件详情保存成功');
+    }
+
+    // 继承昨日大事件
+    inheritYesterdayEvents() {
+        const yesterday = DateUtils.addDays(this.currentDate, -1);
+        const yesterdayDiary = diaryManager.getDiary(yesterday);
+        
+        if (yesterdayDiary.majorEvents.length === 0) {
+            MessageUtils.showInfo('昨天没有大事件可以继承');
+            return;
+        }
+        
+        this.showInheritanceModal(yesterdayDiary.majorEvents, yesterday);
+    }
+    
+    // 显示继承选择模态框
+    showInheritanceModal(events, yesterday) {
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `
+            <div class="modal-content inheritance-modal">
+                <div class="modal-header">
+                    <h2>继承昨日大事</h2>
+                    <button class="modal-close" onclick="this.parentElement.parentElement.parentElement.remove()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="inheritance-info">
+                        <p>选择要继承到今天的事件（${DateUtils.getChineseDate(yesterday)} → ${DateUtils.getChineseDate(this.currentDate)}）</p>
+                    </div>
+                    <div class="inheritance-list">
+                        ${events.map(event => `
+                            <div class="inheritance-item">
+                                <label class="inheritance-checkbox">
+                                    <input type="checkbox" value="${event.id}" checked>
+                                    <span class="checkmark"></span>
+                                    <div class="event-preview">
+                                        <div class="event-text">${StringUtils.escapeHtml(event.text)}</div>
+                                        <div class="event-meta">创建于 ${DateUtils.getChineseDate(event.createdAt.split('T')[0])}</div>
+                                    </div>
+                                </label>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <div class="inheritance-actions">
+                        <button class="inheritance-select-all" onclick="diaryController.toggleSelectAllEvents(true)">全选</button>
+                        <button class="inheritance-select-none" onclick="diaryController.toggleSelectAllEvents(false)">取消全选</button>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="action-btn" onclick="diaryController.confirmInheritance()">继承选中项</button>
+                    <button class="action-btn" onclick="this.parentElement.parentElement.parentElement.remove()">取消</button>
+                </div>
+            </div>
+        `;
+        
+        // 点击背景关闭
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.remove();
+            }
+        });
+        
+        document.body.appendChild(modal);
+        
+        // 保存原始事件数据
+        this.inheritanceData = { events, yesterday };
+    }
+    
+    // 切换全选/取消全选
+    toggleSelectAllEvents(selectAll) {
+        const checkboxes = document.querySelectorAll('.inheritance-item input[type="checkbox"]');
+        checkboxes.forEach(checkbox => {
+            checkbox.checked = selectAll;
+        });
+    }
+    
+    // 确认继承选中的事件
+    confirmInheritance() {
+        const checkboxes = document.querySelectorAll('.inheritance-item input[type="checkbox"]:checked');
+        const selectedIds = Array.from(checkboxes).map(cb => cb.value);
+        
+        if (selectedIds.length === 0) {
+            MessageUtils.showInfo('请至少选择一个事件进行继承');
+            return;
+        }
+        
+        // 获取选中的事件
+        const selectedEvents = this.inheritanceData.events
+            .filter(event => selectedIds.includes(event.id))
+            .map(event => ({
+                id: StringUtils.generateId(),
+                text: event.text,
+                completed: false,
+                createdAt: new Date().toISOString(),
+                link: event.link || ''
+            }));
+        
+        // 添加到当前日记
+        this.currentDiary.majorEvents.push(...selectedEvents);
+        this.renderMajorEvents();
+        this.scheduleAutoSave();
+        
+        // 关闭模态框
+        document.querySelector('.modal-overlay').remove();
+        
+        MessageUtils.showSuccess(`已继承 ${selectedEvents.length} 个大事件`);
+    }
+    
+    // 更新待办文本
+    updateTodoText(id, text) {
+        const todo = this.currentDiary.todos.find(t => t.id === id);
+        if (todo) {
+            todo.text = text;
+            this.scheduleAutoSave();
+        }
+    }
+    
+    // 更新完成事项文本
+    updateCompletedText(id, text) {
+        const completed = this.currentDiary.completed.find(c => c.id === id);
+        if (completed) {
+            completed.text = text;
+            this.scheduleAutoSave();
+        }
+    }
+    
+    // 切换待办完成状态
+    toggleTodo(id) {
+        const todo = this.currentDiary.todos.find(t => t.id === id);
+        if (todo) {
+            const wasCompleted = todo.completed;
+            todo.completed = !todo.completed;
+            
+            // 如果从未完成变为已完成，自动创建完成事项
+            if (!wasCompleted && todo.completed) {
+                this.createCompletedFromTodo(todo);
+            }
+            // 如果从已完成变为未完成，删除对应的完成事项
+            else if (wasCompleted && !todo.completed) {
+                this.removeRelatedCompleted(todo.id);
+            }
+            
+            this.renderTodos();
+            this.renderCompleted();
+            this.scheduleAutoSave();
+        }
+    }
+    
+    // 切换待办事项日常标签
+    toggleTodoDaily(id) {
+        const todo = this.currentDiary.todos.find(t => t.id === id);
+        if (todo) {
+            todo.isDaily = !todo.isDaily;
+            
+            if (todo.isDaily) {
+                MessageUtils.showSuccess('已标记为日常任务，将每天自动创建');
+                // 为未来日期自动创建日常任务
+                this.createDailyTodosForFuture(todo);
+            } else {
+                MessageUtils.showInfo('已取消日常标记');
+            }
+            
+            this.scheduleAutoSave();
+        }
+    }
+    
+    // 为未来日期创建日常任务（如果已有日记）
+    createDailyTodosForFuture(dailyTodo) {
+        const today = DateUtils.getToday();
+        const allDiaries = diaryManager.getAllDiaries();
+        
+        // 遍历已有的日记，为每个日期创建日常任务
+        Object.keys(allDiaries).forEach(date => {
+            if (date !== this.currentDate) {
+                const diary = allDiaries[date];
+                
+                // 检查是否已经存在相同的日常任务
+                const existingDailyTodo = diary.todos.find(todo => 
+                    todo.isDaily && todo.text === dailyTodo.text
+                );
+                
+                if (!existingDailyTodo) {
+                    // 创建日常任务副本
+                    const newDailyTodo = {
+                        id: StringUtils.generateId(),
+                        text: dailyTodo.text,
+                        completed: false,
+                        isDaily: true,
+                        relatedEventId: dailyTodo.relatedEventId || '',
+                        createdAt: new Date().toISOString()
+                    };
+                    
+                    diary.todos.push(newDailyTodo);
+                }
+            }
+        });
+        
+        // 保存数据
+        diaryManager.saveDiary(this.currentDate, this.currentDiary);
+        Object.keys(allDiaries).forEach(date => {
+            if (date !== this.currentDate) {
+                diaryManager.saveDiary(date, allDiaries[date]);
+            }
+        });
+    }
+    
+    // 为当前日期创建日常任务
+    createDailyTodos() {
+        const allDiaries = diaryManager.getAllDiaries();
+        let hasNewDailyTodos = false;
+        
+        // 遍历所有日记，查找所有标记为日常的任务
+        Object.entries(allDiaries).forEach(([date, diary]) => {
+            diary.todos.forEach(todo => {
+                if (todo.isDaily) {
+                    // 检查当前日期是否已经有相同的日常任务
+                    const existingDailyTodo = this.currentDiary.todos.find(currentTodo => 
+                        currentTodo.isDaily && currentTodo.text === todo.text
+                    );
+                    
+                    if (!existingDailyTodo) {
+                        // 创建日常任务副本
+                        const newDailyTodo = {
+                            id: StringUtils.generateId(),
+                            text: todo.text,
+                            completed: false,
+                            isDaily: true,
+                            relatedEventId: todo.relatedEventId || '',
+                            createdAt: new Date().toISOString()
+                        };
+                        
+                        this.currentDiary.todos.push(newDailyTodo);
+                        hasNewDailyTodos = true;
+                    }
+                }
+            });
+        });
+        
+        // 如果有新的日常任务，保存数据
+        if (hasNewDailyTodos) {
+            diaryManager.saveDiary(this.currentDate, this.currentDiary);
+        }
+    }
+    
+    // 从待办事项创建关联的完成事项
+    createCompletedFromTodo(todo) {
+        const completed = {
+            id: StringUtils.generateId(),
+            text: todo.text, // 直接使用待办事项的文本
+            relatedTodoId: todo.id,
+            completedAt: new Date().toISOString()
+        };
+        
+        this.currentDiary.completed.push(completed);
+        
+        // 延迟聚焦到新创建的完成事项
+        setTimeout(() => {
+            const completedInputs = this.elements.completedList.querySelectorAll('input[type="text"]');
+            const newInput = Array.from(completedInputs).find(input => input.dataset.id === completed.id);
+            if (newInput) {
+                newInput.focus();
+                newInput.select(); // 选中文本以便编辑
+            }
+        }, 100);
+    }
+    
+    // 删除与指定待办事项关联的完成事项
+    removeRelatedCompleted(todoId) {
+        const index = this.currentDiary.completed.findIndex(c => c.relatedTodoId === todoId);
+        if (index >= 0) {
+            this.currentDiary.completed.splice(index, 1);
+        }
+    }
+    
+    // 更新待办关联
+    updateTodoRelation(id, eventId) {
+        const todo = this.currentDiary.todos.find(t => t.id === id);
+        if (todo) {
+            todo.relatedEventId = eventId;
+            this.scheduleAutoSave();
+        }
+    }
+    
+    // 更新完成事项关联
+    updateCompletedRelation(id, todoId) {
+        const completed = this.currentDiary.completed.find(c => c.id === id);
+        if (completed) {
+            completed.relatedTodoId = todoId;
+            this.scheduleAutoSave();
+        }
+    }
+    
+    // 文本展开/折叠功能
+    toggleTextExpansion(button) {
+        const listItem = button.closest('.list-item');
+        const input = listItem.querySelector('input[type="text"]');
+        
+        if (listItem.classList.contains('text-expanded')) {
+            // 折叠文本
+            listItem.classList.remove('text-expanded');
+            button.textContent = '...';
+            button.title = '展开文本';
+        } else {
+            // 展开文本
+            listItem.classList.add('text-expanded');
+            button.textContent = '收起';
+            button.title = '收起文本';
+        }
+    }
+    
+    // 更新文本展开按钮
+    updateTextExpansionButton(container, text) {
+        const isLongText = text.length > 50;
+        const expandBtn = container.querySelector('.text-expand-btn');
+        const input = container.querySelector('input[type="text"]');
+        
+        if (isLongText && !expandBtn) {
+            // 添加展开按钮
+            const newBtn = document.createElement('button');
+            newBtn.className = 'text-expand-btn';
+            newBtn.textContent = '...';
+            newBtn.title = '展开文本';
+            newBtn.onclick = () => this.toggleTextExpansion(newBtn);
+            
+            input.insertAdjacentElement('afterend', newBtn);
+            input.title = text;
+            this.addTextTooltip(input);
+        } else if (!isLongText && expandBtn) {
+            // 移除展开按钮
+            expandBtn.remove();
+            input.title = '';
+            container.classList.remove('text-expanded');
+            this.removeTextTooltip(input);
+        } else if (isLongText && expandBtn) {
+            // 更新提示
+            input.title = text;
+        }
+    }
+    
+    // 添加文本提示
+    addTextTooltip(input) {
+        let tooltip = null;
+        
+        input.addEventListener('mouseenter', (e) => {
+            if (input.value.length <= 50) return;
+            
+            // 移除现有提示
+            this.removeTextTooltip(input);
+            
+            tooltip = document.createElement('div');
+            tooltip.className = 'text-tooltip';
+            tooltip.textContent = input.value;
+            
+            // 定位提示
+            const rect = input.getBoundingClientRect();
+            tooltip.style.left = rect.left + rect.width / 2 + 'px';
+            tooltip.style.top = rect.top - 10 + 'px';
+            
+            document.body.appendChild(tooltip);
+            
+            // 展示提示
+            setTimeout(() => {
+                if (tooltip) {
+                    tooltip.classList.add('visible');
+                }
+            }, 100);
+        });
+        
+        input.addEventListener('mouseleave', () => {
+            this.removeTextTooltip(input);
+        });
+    }
+    
+    // 移除文本提示
+    removeTextTooltip(input) {
+        const existingTooltips = document.querySelectorAll('.text-tooltip');
+        existingTooltips.forEach(tooltip => tooltip.remove());
+    }
+    
+    // 删除事件
+    removeEvent(id, type) {
+        const list = type === 'majorEvent' ? this.currentDiary.majorEvents : [];
+        const index = list.findIndex(e => e.id === id);
+        if (index >= 0) {
+            list.splice(index, 1);
+            this.renderMajorEvents();
+            this.scheduleAutoSave();
+        }
+    }
+    
+    // 删除待办
+    removeTodo(id) {
+        const index = this.currentDiary.todos.findIndex(t => t.id === id);
+        if (index >= 0) {
+            this.currentDiary.todos.splice(index, 1);
+            this.renderTodos();
+            this.scheduleAutoSave();
+        }
+    }
+    
+    // 删除完成事项
+    removeCompleted(id) {
+        const index = this.currentDiary.completed.findIndex(c => c.id === id);
+        if (index >= 0) {
+            this.currentDiary.completed.splice(index, 1);
+            this.renderCompleted();
+            this.scheduleAutoSave();
+        }
+    }
+    
+    // 计划自动保存
+    scheduleAutoSave() {
+        if (this.autoSaveTimer) {
+            clearTimeout(this.autoSaveTimer);
+        }
+        
+        this.autoSaveTimer = setTimeout(() => {
+            this.saveDiary();
+        }, this.autoSaveDelay);
+    }
+    
+    // 保存日记
+    saveDiary() {
+        if (!this.currentDiary) return;
+        
+        // 更新感悟内容
+        this.currentDiary.reflection = this.elements.reflectionText.value;
+        
+        // 保存到存储
+        const success = diaryManager.saveDiary(this.currentDate, this.currentDiary);
+        
+        if (success) {
+            console.log('日记已自动保存');
+            // 更新热力图
+            this.updateHeatmap();
+        } else {
+            MessageUtils.showError('保存失败，请检查存储空间');
+        }
+    }
+    
+    // 导出当前日记
+    exportCurrentDiary() {
+        const diary = this.currentDiary;
+        const date = this.currentDate;
+        const chineseDate = DateUtils.getChineseDate(date);
+        
+        let content = `# ${chineseDate} 日记\n\n`;
+        
+        // 今日大事
+        content += `## 今日大事\n`;
+        if (diary.majorEvents.length > 0) {
+            diary.majorEvents.forEach((event, index) => {
+                content += `${index + 1}. ${event.text}\n`;
+            });
+        } else {
+            content += `暂无记录\n`;
+        }
+        content += `\n`;
+        
+        // 今日待办
+        content += `## 今日待办\n`;
+        if (diary.todos.length > 0) {
+            diary.todos.forEach(todo => {
+                const status = todo.completed ? '✓' : '○';
+                content += `${status} ${todo.text}\n`;
+            });
+        } else {
+            content += `暂无记录\n`;
+        }
+        content += `\n`;
+        
+        // 完成事项
+        content += `## 完成事项\n`;
+        if (diary.completed.length > 0) {
+            diary.completed.forEach((completed, index) => {
+                content += `${index + 1}. ${completed.text}\n`;
+            });
+        } else {
+            content += `暂无记录\n`;
+        }
+        content += `\n`;
+        
+        // 今日感悟
+        content += `## 今日感悟\n`;
+        content += diary.reflection || '暂无记录';
+        content += `\n\n---\n导出时间: ${new Date().toLocaleString()}`;
+        
+        // 导出文件
+        const filename = `日记_${date}.txt`;
+        ExportUtils.exportAsText(content, filename);
+        
+        MessageUtils.showSuccess('日记导出成功');
+    }
+    
+    // 显示导出模态框
+    showExportModal() {
+        const modal = document.getElementById('diary-export-modal');
+        const startDate = document.getElementById('export-start-date');
+        const endDate = document.getElementById('export-end-date');
+        
+        // 设置默认日期为当天
+        startDate.value = this.currentDate;
+        endDate.value = this.currentDate;
+        
+        modal.style.display = 'block';
+        
+        // 绑定事件
+        this.bindExportModalEvents(modal);
+    }
+    
+    // 显示清空模态框
+    showClearModal() {
+        const modal = document.getElementById('diary-clear-modal');
+        const startDate = document.getElementById('clear-start-date');
+        const endDate = document.getElementById('clear-end-date');
+        
+        // 设置默认日期为当天
+        startDate.value = this.currentDate;
+        endDate.value = this.currentDate;
+        
+        modal.style.display = 'block';
+        
+        // 绑定事件
+        this.bindClearModalEvents(modal);
+    }
+    
+    // 绑定导出模态框事件
+    bindExportModalEvents(modal) {
+        // 关闭按钮
+        const closeBtn = modal.querySelector('.close');
+        closeBtn.onclick = () => {
+            modal.style.display = 'none';
+        };
+        
+        // 点击背景关闭
+        modal.onclick = (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        };
+        
+        // 导出当天
+        document.getElementById('export-current-day').onclick = () => {
+            this.exportCurrentDiary();
+            modal.style.display = 'none';
+        };
+        
+        // 导出所有日记
+        document.getElementById('export-all-diaries').onclick = () => {
+            this.exportAllDiaries();
+            modal.style.display = 'none';
+        };
+        
+        // 导出指定范围
+        document.getElementById('export-date-range').onclick = () => {
+            const startDate = document.getElementById('export-start-date').value;
+            const endDate = document.getElementById('export-end-date').value;
+            
+            if (!startDate || !endDate) {
+                MessageUtils.showError('请选择日期范围');
+                return;
+            }
+            
+            if (startDate > endDate) {
+                MessageUtils.showError('开始日期不能大于结束日期');
+                return;
+            }
+            
+            this.exportDateRange(startDate, endDate);
+            modal.style.display = 'none';
+        };
+    }
+    
+    // 绑定清空模态框事件
+    bindClearModalEvents(modal) {
+        // 关闭按钮
+        const closeBtn = modal.querySelector('.close');
+        closeBtn.onclick = () => {
+            modal.style.display = 'none';
+        };
+        
+        // 点击背景关闭
+        modal.onclick = (e) => {
+            if (e.target === modal) {
+                modal.style.display = 'none';
+            }
+        };
+        
+        // 清空当天
+        document.getElementById('clear-current-day').onclick = () => {
+            this.clearCurrentDiary();
+            modal.style.display = 'none';
+        };
+        
+        // 清空所有日记
+        document.getElementById('clear-all-diaries').onclick = () => {
+            this.clearAllDiaries();
+            modal.style.display = 'none';
+        };
+        
+        // 清空指定范围
+        document.getElementById('clear-date-range').onclick = () => {
+            const startDate = document.getElementById('clear-start-date').value;
+            const endDate = document.getElementById('clear-end-date').value;
+            
+            if (!startDate || !endDate) {
+                MessageUtils.showError('请选择日期范围');
+                return;
+            }
+            
+            if (startDate > endDate) {
+                MessageUtils.showError('开始日期不能大于结束日期');
+                return;
+            }
+            
+            this.clearDateRange(startDate, endDate);
+            modal.style.display = 'none';
+        };
+    }
+    
+    // 导出所有日记
+    exportAllDiaries() {
+        const allDates = diaryManager.getAllDiaryDates();
+        
+        if (allDates.length === 0) {
+            MessageUtils.showInfo('没有日记数据可导出');
+            return;
+        }
+        
+        let content = '# 所有日记\n\n';
+        
+        allDates.forEach(date => {
+            const diary = diaryManager.getDiary(date);
+            const chineseDate = DateUtils.getChineseDate(date);
+            
+            content += `## ${chineseDate}\n\n`;
+            content += this.formatDiaryContent(diary);
+            content += '\n---\n\n';
+        });
+        
+        content += `导出时间: ${new Date().toLocaleString()}`;
+        
+        const filename = `所有日记_${DateUtils.getToday()}.txt`;
+        ExportUtils.exportAsText(content, filename);
+        
+        MessageUtils.showSuccess(`已导出 ${allDates.length} 天的日记`);
+    }
+    
+    // 导出指定范围的日记
+    exportDateRange(startDate, endDate) {
+        const dates = this.getDateRange(startDate, endDate);
+        
+        if (dates.length === 0) {
+            MessageUtils.showInfo('指定范围内没有日记数据');
+            return;
+        }
+        
+        let content = `# 日记导出 (${startDate} 至 ${endDate})\n\n`;
+        
+        dates.forEach(date => {
+            const diary = diaryManager.getDiary(date);
+            const chineseDate = DateUtils.getChineseDate(date);
+            
+            content += `## ${chineseDate}\n\n`;
+            content += this.formatDiaryContent(diary);
+            content += '\n---\n\n';
+        });
+        
+        content += `导出时间: ${new Date().toLocaleString()}`;
+        
+        const filename = `日记_${startDate}_至_${endDate}.txt`;
+        ExportUtils.exportAsText(content, filename);
+        
+        MessageUtils.showSuccess(`已导出 ${dates.length} 天的日记`);
+    }
+    
+    // 格式化日记内容
+    formatDiaryContent(diary) {
+        let content = '';
+        
+        // 今日大事
+        content += `### 今日大事\n`;
+        if (diary.majorEvents.length > 0) {
+            diary.majorEvents.forEach((event, index) => {
+                content += `${index + 1}. ${event.text}\n`;
+            });
+        } else {
+            content += `暂无记录\n`;
+        }
+        content += `\n`;
+        
+        // 今日待办
+        content += `### 今日待办\n`;
+        if (diary.todos.length > 0) {
+            diary.todos.forEach(todo => {
+                const status = todo.completed ? '✓' : '○';
+                content += `${status} ${todo.text}\n`;
+            });
+        } else {
+            content += `暂无记录\n`;
+        }
+        content += `\n`;
+        
+        // 完成事项
+        content += `### 完成事项\n`;
+        if (diary.completed.length > 0) {
+            diary.completed.forEach((completed, index) => {
+                content += `${index + 1}. ${completed.text}\n`;
+            });
+        } else {
+            content += `暂无记录\n`;
+        }
+        content += `\n`;
+        
+        // 今日感悟
+        content += `### 今日感悟\n`;
+        content += diary.reflection || '暂无记录';
+        content += `\n`;
+        
+        return content;
+    }
+    
+    // 清空当天日记
+    clearCurrentDiary() {
+        ConfirmUtils.confirm(
+            '清空当天日记',
+            `确定要清空 ${DateUtils.getChineseDate(this.currentDate)} 的日记吗？此操作无法撤销。`,
+            () => {
+                const success = diaryManager.deleteDiary(this.currentDate);
+                if (success) {
+                    this.currentDiary = diaryManager.createEmptyDiary();
+                    this.renderDiary();
+                    MessageUtils.showSuccess('当天日记已清空');
+                } else {
+                    MessageUtils.showError('清空失败');
+                }
+            }
+        );
+    }
+    
+    // 清空所有日记
+    clearAllDiaries() {
+        const allDates = diaryManager.getAllDiaryDates();
+        
+        if (allDates.length === 0) {
+            MessageUtils.showInfo('没有日记数据可清空');
+            return;
+        }
+        
+        ConfirmUtils.confirm(
+            '清空所有日记',
+            `确定要清空所有 ${allDates.length} 天的日记吗？此操作无法撤销。`,
+            () => {
+                let successCount = 0;
+                allDates.forEach(date => {
+                    if (diaryManager.deleteDiary(date)) {
+                        successCount++;
+                    }
+                });
+                
+                // 更新当前显示
+                if (allDates.includes(this.currentDate)) {
+                    this.currentDiary = diaryManager.createEmptyDiary();
+                    this.renderDiary();
+                }
+                
+                MessageUtils.showSuccess(`已清空 ${successCount} 天的日记`);
+            }
+        );
+    }
+    
+    // 清空指定范围的日记
+    clearDateRange(startDate, endDate) {
+        const dates = this.getDateRange(startDate, endDate);
+        
+        if (dates.length === 0) {
+            MessageUtils.showInfo('指定范围内没有日记数据');
+            return;
+        }
+        
+        ConfirmUtils.confirm(
+            '清空指定范围日记',
+            `确定要清空 ${startDate} 至 ${endDate} 范围内的 ${dates.length} 天日记吗？此操作无法撤销。`,
+            () => {
+                let successCount = 0;
+                dates.forEach(date => {
+                    if (diaryManager.deleteDiary(date)) {
+                        successCount++;
+                    }
+                });
+                
+                // 更新当前显示
+                if (dates.includes(this.currentDate)) {
+                    this.currentDiary = diaryManager.createEmptyDiary();
+                    this.renderDiary();
+                }
+                
+                MessageUtils.showSuccess(`已清空 ${successCount} 天的日记`);
+            }
+        );
+    }
+    
+    // 获取日期范围
+    getDateRange(startDate, endDate) {
+        const dates = [];
+        const start = DateUtils.parseDate(startDate);
+        const end = DateUtils.parseDate(endDate);
+        const allDates = diaryManager.getAllDiaryDates();
+        
+        for (let date = start; date <= end; date.setDate(date.getDate() + 1)) {
+            const dateStr = DateUtils.formatDate(date);
+            if (allDates.includes(dateStr)) {
+                dates.push(dateStr);
+            }
+        }
+        
+        return dates;
+    }
+    
+    // 显示导出模态框
+    showExportModal() {
+        const modal = document.getElementById('diary-export-modal');
+        const startDate = document.getElementById('export-start-date');
+        const endDate = document.getElementById('export-end-date');
+        
+        // 设置默认日期为当天
+        startDate.value = this.currentDate;
+        endDate.value = this.currentDate;
+        
+        modal.style.display = 'block';
+        this.bindExportModalEvents(modal);
+    }
+    
+    // 显示清空模态框
+    showClearModal() {
+        const modal = document.getElementById('diary-clear-modal');
+        const startDate = document.getElementById('clear-start-date');
+        const endDate = document.getElementById('clear-end-date');
+        
+        // 设置默认日期为当天
+        startDate.value = this.currentDate;
+        endDate.value = this.currentDate;
+        
+        modal.style.display = 'block';
+        this.bindClearModalEvents(modal);
+    }
+    
+    // 绑定导出模态框事件
+    bindExportModalEvents(modal) {
+        const closeBtn = modal.querySelector('.close');
+        const exportCurrentDay = document.getElementById('export-current-day');
+        const exportAllDiaries = document.getElementById('export-all-diaries');
+        const exportDateRange = document.getElementById('export-date-range');
+        
+        const closeModal = () => {
+            modal.style.display = 'none';
+        };
+        
+        // 绑定关闭事件
+        const handleCloseClick = (e) => {
+            e.stopPropagation();
+            closeModal();
+        };
+        
+        const handleModalClick = (e) => {
+            if (e.target === modal) {
+                closeModal();
+            }
+        };
+        
+        closeBtn.onclick = handleCloseClick;
+        modal.onclick = handleModalClick;
+        
+        // 绑定导出事件
+        exportCurrentDay.onclick = () => {
+            this.exportCurrentDiary();
+            closeModal();
+        };
+        
+        exportAllDiaries.onclick = () => {
+            this.exportAllDiaries();
+            closeModal();
+        };
+        
+        exportDateRange.onclick = () => {
+            const startDate = document.getElementById('export-start-date').value;
+            const endDate = document.getElementById('export-end-date').value;
+            
+            if (!startDate || !endDate) {
+                MessageUtils.showError('请选择开始和结束日期');
+                return;
+            }
+            
+            if (startDate > endDate) {
+                MessageUtils.showError('开始日期不能晚于结束日期');
+                return;
+            }
+            
+            this.exportDateRange(startDate, endDate);
+            closeModal();
+        };
+    }
+    
+    // 绑定清空模态框事件
+    bindClearModalEvents(modal) {
+        const closeBtn = modal.querySelector('.close');
+        const clearCurrentDay = document.getElementById('clear-current-day');
+        const clearAllDiaries = document.getElementById('clear-all-diaries');
+        const clearDateRange = document.getElementById('clear-date-range');
+        
+        const closeModal = () => {
+            modal.style.display = 'none';
+        };
+        
+        // 绑定关闭事件
+        const handleCloseClick = (e) => {
+            e.stopPropagation();
+            closeModal();
+        };
+        
+        const handleModalClick = (e) => {
+            if (e.target === modal) {
+                closeModal();
+            }
+        };
+        
+        closeBtn.onclick = handleCloseClick;
+        modal.onclick = handleModalClick;
+        
+        // 绑定清空事件
+        clearCurrentDay.onclick = () => {
+            this.clearCurrentDiary();
+            closeModal();
+        };
+        
+        clearAllDiaries.onclick = () => {
+            this.clearAllDiaries();
+            closeModal();
+        };
+        
+        clearDateRange.onclick = () => {
+            const startDate = document.getElementById('clear-start-date').value;
+            const endDate = document.getElementById('clear-end-date').value;
+            
+            if (!startDate || !endDate) {
+                MessageUtils.showError('请选择开始和结束日期');
+                return;
+            }
+            
+            if (startDate > endDate) {
+                MessageUtils.showError('开始日期不能晚于结束日期');
+                return;
+            }
+            
+            this.clearDateRange(startDate, endDate);
+            closeModal();
+        };
+    }
+    
+    // 初始化热力图
+    initializeHeatmap() {
+        this.heatmapExpanded = false;
+        
+        // 确保在DOM完全加载后再绑定事件
+        const bindEvents = () => {
+            this.bindHeatmapEvents();
+        };
+        
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', bindEvents);
+        } else {
+            // DOM已经加载完毕
+            setTimeout(bindEvents, 0);
+        }
+        
+        // 初始化时设置为隐藏状态
+        const container = document.getElementById('diary-heatmap');
+        if (container) {
+            container.classList.add('hidden');
+        }
+        
+        // 添加窗口大小改变监听器
+        let resizeTimer;
+        window.addEventListener('resize', () => {
+            // 防抖处理，避免频繁重新生成
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                if (this.heatmapExpanded) {
+                    this.generateHeatmap();
+                }
+            }, 300);
+        });
+    }
+    
+    // 绑定热力图事件
+    bindHeatmapEvents() {
+        const toggleBtn = document.getElementById('toggle-heatmap');
+        
+        if (toggleBtn) {
+            // 清除可能存在的旧事件
+            toggleBtn.onclick = null;
+            
+            // 使用最简单直接的onclick绑定
+            toggleBtn.onclick = () => {
+                this.toggleHeatmap();
+            };
+            
+        } else {
+            console.error('未找到热力图切换按钮！');
+        }
+    }
+    
+    // 切换热力图展开/折叠状态
+    toggleHeatmap() {
+        const container = document.getElementById('diary-heatmap');
+        const toggleBtn = document.getElementById('toggle-heatmap');
+        const arrow = toggleBtn.querySelector('.toggle-arrow');
+        const text = toggleBtn.querySelector('.toggle-text');
+        
+        if (!container || !toggleBtn || !arrow || !text) {
+            console.error('热力图元素未找到');
+            return;
+        }
+        
+        // 切换状态
+        this.heatmapExpanded = !this.heatmapExpanded;
+        
+        if (this.heatmapExpanded) {
+            // 展开热力图
+            container.classList.remove('hidden');
+            arrow.textContent = '▼';  // 向下箭头
+            text.textContent = '折叠热力图';
+            toggleBtn.title = '折叠日记热力图';
+            this.generateHeatmap();
+        } else {
+            // 折叠热力图
+            container.classList.add('hidden');
+            arrow.textContent = '◀';  // 向左箭头
+            text.textContent = '展开热力图';
+            toggleBtn.title = '展开日记热力图';
+        }
+    }
+    
+    // 生成热力图
+    generateHeatmap() {
+        if (!this.heatmapExpanded) return;
+        
+        const grid = document.getElementById('heatmap-grid');
+        const monthsContainer = document.getElementById('heatmap-months');
+        const today = new Date();
+        const endDate = new Date(today);
+        const startDate = new Date(today);
+        
+        // 根据屏幕大小决定显示的天数和周数
+        const isMobile = window.innerWidth <= 768;
+        let weeksToShow, daysToShow;
+        
+        if (isMobile) {
+            // 手机端：显示更少的周数确保一行完全展示
+            // 计算手机屏幕能容纳的最大周数
+            const screenWidth = window.innerWidth;
+            const cellWidth = 10; // 格子宽度（匹配CSS）
+            const gap = 1; // 间隙（匹配CSS）
+            const weekdayWidth = 14; // 星期标签宽度（匹配CSS）
+            const padding = 48; // 左右边距和其他元素的空间
+            
+            // 计算最大可容纳的周数
+            const availableWidth = screenWidth - weekdayWidth - padding;
+            const weekWidth = cellWidth + gap;
+            const maxWeeks = Math.floor(availableWidth / weekWidth);
+            
+            // 确保不超过18周（约4.5个月），并且不少于10周（约2.5个月）
+            weeksToShow = Math.min(Math.max(maxWeeks, 10), 18);
+            daysToShow = weeksToShow * 7 - 1;
+        } else {
+            // 电脑端：显示更多周数但格子更大
+            weeksToShow = 39; // 显示39周（约9个月）
+            daysToShow = weeksToShow * 7 - 1;
+        }
+        
+        startDate.setDate(startDate.getDate() - daysToShow);
+        
+        // 清空现有内容
+        grid.innerHTML = '';
+        monthsContainer.innerHTML = '';
+        
+        // 获取所有日记数据
+        const allDiaries = diaryManager.getAllDiaries();
+        
+        // 生成月份标签
+        this.generateMonthLabels(monthsContainer, startDate, endDate, weeksToShow);
+        
+        // 生成日期网格（按列排列，每列7天）
+        const dateGrid = this.generateDateGrid(startDate, endDate, weeksToShow);
+        
+        // 更新CSS网格列数
+        grid.style.gridTemplateColumns = `repeat(${weeksToShow}, 1fr)`;
+        
+        // 填充网格
+        dateGrid.forEach(dateStr => {
+            if (dateStr) {
+                const dayElement = this.createHeatmapDay(dateStr, allDiaries[dateStr]);
+                grid.appendChild(dayElement);
+            } else {
+                // 空格子用于对齐
+                const emptyElement = document.createElement('div');
+                emptyElement.className = 'heatmap-cell empty';
+                emptyElement.style.visibility = 'hidden';
+                grid.appendChild(emptyElement);
+            }
+        });
+        
+        // 同时更新月份标签的网格列数
+        monthsContainer.style.gridTemplateColumns = `repeat(${weeksToShow}, 1fr)`;
+    }
+    
+    // 生成月份标签
+    generateMonthLabels(container, startDate, endDate, weeksToShow) {
+        const months = ['1月', '2月', '3月', '4月', '5月', '6月', 
+                       '7月', '8月', '9月', '10月', '11月', '12月'];
+        
+        // 创建一个包含指定周数的数组
+        const weekLabels = new Array(weeksToShow).fill('');
+        
+        // 计算起始日期是星期几（0=周日，1=周一...）
+        let currentDate = new Date(startDate);
+        const firstDayOfWeek = (currentDate.getDay() + 6) % 7; // 转换为周一=0的格式
+        
+        // 调整到第一个完整周的开始
+        currentDate.setDate(currentDate.getDate() - firstDayOfWeek);
+        
+        let weekIndex = 0;
+        let lastMonth = -1;
+        
+        // 遍历每一周
+        while (weekIndex < weeksToShow && currentDate <= endDate) {
+            const currentMonth = currentDate.getMonth();
+            
+            // 如果月份变化且不是第一周，添加月份标签
+            if (currentMonth !== lastMonth && weekIndex > 0) {
+                weekLabels[weekIndex] = months[currentMonth];
+                lastMonth = currentMonth;
+            } else if (weekIndex === 0) {
+                // 第一周总是显示月份
+                weekLabels[weekIndex] = months[currentMonth];
+                lastMonth = currentMonth;
+            }
+            
+            // 移动到下一周
+            currentDate.setDate(currentDate.getDate() + 7);
+            weekIndex++;
+        }
+        
+        // 创建月份标签元素
+        weekLabels.forEach(label => {
+            const monthElement = document.createElement('div');
+            monthElement.className = 'month-label';
+            monthElement.textContent = label;
+            container.appendChild(monthElement);
+        });
+    }
+    
+    // 生成日期网格数组（按列排列，GitHub风格）
+    generateDateGrid(startDate, endDate, weeksToShow) {
+        const grid = [];
+        
+        // 计算起始日期是星期几（0=周一，1=周二...6=周日）
+        let currentDate = new Date(startDate);
+        const firstDayOfWeek = (currentDate.getDay() + 6) % 7;
+        
+        // 调整到第一个完整周的开始（周一）
+        currentDate.setDate(currentDate.getDate() - firstDayOfWeek);
+        
+        // 生成指定周数的网格，每列7天（纵向排列）
+        for (let week = 0; week < weeksToShow; week++) {
+            for (let day = 0; day < 7; day++) {
+                const weekIndex = week;
+                const dayIndex = day;
+                
+                if (currentDate >= startDate && currentDate <= endDate) {
+                    // 计算在网格中的位置（列优先，即纵向排列）
+                    const gridIndex = weekIndex * 7 + dayIndex;
+                    grid[gridIndex] = DateUtils.formatDate(currentDate);
+                } else {
+                    const gridIndex = weekIndex * 7 + dayIndex;
+                    grid[gridIndex] = null; // 空格子
+                }
+                currentDate.setDate(currentDate.getDate() + 1);
+            }
+        }
+        
+        return grid;
+    }
+    
+    // 创建热力图中的单个日期格子
+    createHeatmapDay(dateStr, diaryData) {
+        const dayElement = document.createElement('div');
+        dayElement.className = 'heatmap-cell';
+        dayElement.dataset.date = dateStr;
+        
+        // 计算活跃度等级
+        const level = this.calculateActivityLevel(diaryData);
+        dayElement.dataset.level = level;
+        
+        // 如果是今天，添加特殊样式
+        if (dateStr === DateUtils.getToday()) {
+            dayElement.classList.add('today');
+        }
+        
+        // 添加点击事件
+        dayElement.onclick = () => {
+            this.loadDiary(dateStr);
+            // 滚动到日期导航位置
+            document.querySelector('.date-nav').scrollIntoView({ 
+                behavior: 'smooth' 
+            });
+        };
+        
+        // 添加悬停提示
+        dayElement.onmouseenter = (e) => {
+            this.showHeatmapTooltip(e, dateStr, diaryData);
+        };
+        
+        dayElement.onmouseleave = () => {
+            this.hideHeatmapTooltip();
+        };
+        
+        return dayElement;
+    }
+    
+    // 计算活跃度等级（0-4）
+    calculateActivityLevel(diaryData) {
+        if (!diaryData) return 0;
+        
+        let score = 0;
+        
+        // 大事件计分
+        score += (diaryData.majorEvents || []).length * 2;
+        
+        // 待办事项计分
+        score += (diaryData.todos || []).length * 1;
+        
+        // 完成事项计分
+        score += (diaryData.completed || []).length * 1;
+        
+        // 感悟内容计分
+        if (diaryData.reflection && diaryData.reflection.trim().length > 0) {
+            score += Math.min(diaryData.reflection.length / 50, 3); // 最多3分
+        }
+        
+        // 转换为0-4等级
+        if (score === 0) return 0;
+        if (score <= 2) return 1;
+        if (score <= 5) return 2;
+        if (score <= 10) return 3;
+        return 4;
+    }
+    
+    // 显示热力图提示
+    showHeatmapTooltip(event, dateStr, diaryData) {
+        // 移除现有提示
+        this.hideHeatmapTooltip();
+        
+        const tooltip = document.createElement('div');
+        tooltip.className = 'heatmap-tooltip show';
+        tooltip.id = 'heatmap-tooltip';
+        
+        const chineseDate = DateUtils.getChineseDate(dateStr);
+        const level = this.calculateActivityLevel(diaryData);
+        const levelText = ['无记录', '少量记录', '中等记录', '丰富记录', '详细记录'][level];
+        
+        let content = `${chineseDate}<br>${levelText}`;
+        
+        if (diaryData) {
+            const stats = [];
+            if (diaryData.majorEvents && diaryData.majorEvents.length > 0) {
+                stats.push(`${diaryData.majorEvents.length}个大事`);
+            }
+            if (diaryData.todos && diaryData.todos.length > 0) {
+                stats.push(`${diaryData.todos.length}个待办`);
+            }
+            if (diaryData.completed && diaryData.completed.length > 0) {
+                stats.push(`${diaryData.completed.length}个完成`);
+            }
+            if (diaryData.reflection && diaryData.reflection.trim().length > 0) {
+                stats.push('有感悟');
+            }
+            
+            if (stats.length > 0) {
+                content += `<br>${stats.join('，')}`;
+            }
+        }
+        
+        tooltip.innerHTML = content;
+        
+        // 定位提示
+        const rect = event.target.getBoundingClientRect();
+        tooltip.style.left = rect.left + rect.width / 2 + 'px';
+        tooltip.style.top = rect.top - 10 + 'px';
+        tooltip.style.transform = 'translateX(-50%) translateY(-100%)';
+        
+        document.body.appendChild(tooltip);
+    }
+    
+    // 隐藏热力图提示
+    hideHeatmapTooltip() {
+        const tooltip = document.getElementById('heatmap-tooltip');
+        if (tooltip) {
+            tooltip.remove();
+        }
+    }
+    
+    // 更新热力图（当保存日记时调用）
+    updateHeatmap() {
+        if (this.heatmapExpanded) {
+            this.generateHeatmap();
+        }
+    }
+}
+
+// 初始化日记控制器
+let diaryController;

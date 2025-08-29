@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>日常记录</title>
+    <link rel="stylesheet" href="styles/main.css">
+    <link rel="stylesheet" href="styles/responsive.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 顶部导航 -->
+        <header class="app-header">
+            <h1 class="app-title">日常记录</h1>
+            <nav class="app-nav">
+                <button id="diary-tab" class="nav-btn active">日记</button>
+                <button id="plan-tab" class="nav-btn">计划</button>
+                <button id="settings-btn" class="nav-btn settings">⚙️</button>
+            </nav>
+        </header>
+
+        <!-- 主要内容区域 -->
+        <main class="main-content">
+            <!-- 日记页面 -->
+            <div id="diary-page" class="page active">
+                <!-- 日期导航和热力图容器 -->
+                <div class="date-nav-container">
+                    <!-- 日期导航 -->
+                    <div class="date-nav">
+                        <button id="prev-day" class="date-btn">◀</button>
+                        <input type="date" id="current-date" class="date-input">
+                        <button id="next-day" class="date-btn">▶</button>
+                        <button id="toggle-heatmap" class="heatmap-toggle-btn" title="展开日记热力图">
+                            <span class="toggle-text">展开热力图</span>
+                            <span class="toggle-arrow">◀</span>
+                        </button>
+                    </div>
+
+                    <!-- 日记热力图 -->
+                    <div id="diary-heatmap" class="diary-heatmap hidden">
+                        <div class="heatmap-header">
+                            <h3>日记记录热力图</h3>
+                            <div class="heatmap-legend">
+                                <span class="legend-label">少</span>
+                                <div class="legend-colors">
+                                    <div class="legend-color" data-level="0"></div>
+                                    <div class="legend-color" data-level="1"></div>
+                                    <div class="legend-color" data-level="2"></div>
+                                    <div class="legend-color" data-level="3"></div>
+                                    <div class="legend-color" data-level="4"></div>
+                                </div>
+                                <span class="legend-label">多</span>
+                            </div>
+                        </div>
+                        <div class="heatmap-container">
+                            <div class="heatmap-wrapper">
+                                <div class="heatmap-months" id="heatmap-months">
+                                    <!-- 月份标签将在这里动态生成 -->
+                                </div>
+                                <div class="heatmap-content">
+                                    <div class="heatmap-weekdays">
+                                        <div class="weekday-label">一</div>
+                                        <div class="weekday-label">二</div>
+                                        <div class="weekday-label">三</div>
+                                        <div class="weekday-label">四</div>
+                                        <div class="weekday-label">五</div>
+                                        <div class="weekday-label">六</div>
+                                        <div class="weekday-label">日</div>
+                                    </div>
+                                    <div id="heatmap-grid" class="heatmap-grid">
+                                        <!-- 热力图格子将在这里动态生成 -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 日记内容 -->
+                <div class="diary-content">
+                    <!-- 今日大事 -->
+                    <section class="major-events">
+                        <div class="section-header">
+                            <h2>今日大事</h2>
+                            <div class="section-actions">
+                                <button id="add-major-event" class="add-btn-compact">+ 添加</button>
+                                <button id="inherit-yesterday" class="inherit-btn">继承昨日</button>
+                            </div>
+                        </div>
+                        <div class="events-list" id="major-events-list">
+                            <!-- 大事项目将在这里动态添加 -->
+                        </div>
+                    </section>
+
+                    <!-- 中间两栏 -->
+                    <div class="middle-section">
+                        <!-- 今日todo -->
+                        <section class="todo-section">
+                            <div class="section-header">
+                                <h2>今日待办</h2>
+                                <button id="add-todo" class="add-btn-compact">+ 添加</button>
+                            </div>
+                            <div class="todo-list" id="todo-list">
+                                <!-- todo项目将在这里动态添加 -->
+                            </div>
+                        </section>
+
+                        <!-- 完成事件 -->
+                        <section class="completed-section">
+                            <div class="section-header">
+                                <h2>完成事件</h2>
+                                <button id="add-completed" class="add-btn-compact">+ 添加</button>
+                            </div>
+                            <div class="completed-list" id="completed-list">
+                                <!-- 完成事件将在这里动态添加 -->
+                            </div>
+                        </section>
+                    </div>
+
+                    <!-- 今日感悟 -->
+                    <section class="reflection-section">
+                        <h2>今日感悟</h2>
+                        <textarea id="reflection-text" class="reflection-textarea" placeholder="记录今天的感悟..."></textarea>
+                    </section>
+                </div>
+
+                <!-- 操作按钮 -->
+                <div class="action-buttons">
+                    <button id="export-diary-range" class="action-btn">导出日记</button>
+                    <button id="clear-diary-range" class="action-btn danger">清空日记</button>
+                </div>
+            </div>
+
+            <!-- 计划页面 -->
+            <div id="plan-page" class="page">
+                <div class="plan-header">
+                    <h2>我的计划</h2>
+                    <button id="add-plan" class="add-btn">+ 新建计划</button>
+                </div>
+                <div class="plan-list" id="plan-list">
+                    <!-- 计划列表将在这里动态添加 -->
+                </div>
+            </div>
+
+            <!-- 计划编辑页面 -->
+            <div id="plan-edit-page" class="page">
+                <div class="plan-edit-header">
+                    <button id="back-to-plans" class="back-btn">← 返回</button>
+                    <h2 id="plan-edit-title">编辑计划</h2>
+                </div>
+                <div class="plan-edit-form">
+                    <input type="text" id="plan-name" class="plan-input" placeholder="计划名称">
+                    <div class="tasks-section">
+                        <div class="section-header">
+                            <h3>工作项</h3>
+                            <button id="add-task" class="add-btn-compact">+ 添加</button>
+                        </div>
+                        <div class="common-tasks-section">
+                            <button id="show-common-tasks" class="common-tasks-btn">📁 常用工作项</button>
+                            <div id="common-tasks-dropdown" class="common-tasks-dropdown">
+                                <div class="common-tasks-header">
+                                    <span>选择常用工作项</span>
+                                    <button id="manage-common-tasks" class="manage-btn">管理</button>
+                                </div>
+                                <div id="common-tasks-list" class="common-tasks-list">
+                                    <!-- 常用工作项列表 -->
+                                </div>
+                            </div>
+                        </div>
+                        <div class="tasks-list" id="tasks-list">
+                            <!-- 工作项列表 -->
+                        </div>
+                    </div>
+                    <div class="plan-actions">
+                        <button id="save-plan" class="action-btn">保存计划</button>
+                        <button id="delete-plan" class="action-btn danger">删除计划</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 计划执行页面 -->
+            <div id="plan-execute-page" class="page">
+                <div class="execute-header">
+                    <button id="back-to-plans-exec" class="back-btn">← 返回</button>
+                    <h2 id="execute-plan-title">执行计划</h2>
+                    <div class="timer" id="timer">00:00:00</div>
+                </div>
+                <div class="execute-content">
+                    <div class="execute-tasks" id="execute-tasks">
+                        <!-- 执行中的任务列表 -->
+                    </div>
+                    <div class="execute-actions">
+                        <button id="pause-plan" class="action-btn">暂停</button>
+                        <button id="stop-plan" class="action-btn danger">强制终止</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 文档查看页面 -->
+            <div id="doc-view-page" class="page">
+                <div class="doc-header">
+                    <button id="back-to-main" class="back-btn">← 返回</button>
+                    <h2 id="doc-title">文档查看</h2>
+                </div>
+                <div class="doc-content">
+                    <div id="doc-body" class="markdown-content">
+                        <!-- 文档内容将在这里显示 -->
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- 底部文档链接 -->
+    <footer class="app-footer">
+        <div class="footer-content">
+            <div class="footer-links">
+                <a href="#" id="product-doc-link" class="footer-link" onclick="appController.showDocument('docs/product-spec.md', '产品文档'); return false;">📋 产品文档</a>
+                <a href="#" id="prompt-doc-link" class="footer-link" onclick="appController.showDocument('docs/generation-prompt.md', '生成指令'); return false;">🔧 生成指令</a>
+                <a href="#" id="dev-log-link" class="footer-link" onclick="appController.showDocument('docs/development-log.md', '开发日志'); return false;">📚 开发日志</a>
+                <a href="#" id="user-manual-link" class="footer-link" onclick="appController.showDocument('README.md', '用户手册'); return false;">📖 使用说明</a>
+            </div>
+            <div class="footer-info">
+                <span class="footer-version">v1.0.12</span>
+                <span class="footer-separator">•</span>
+                <span class="footer-date">2025-08-25</span>
+            </div>
+        </div>
+    </footer>
+
+    <!-- 模态框 -->
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- 确认对话框 -->
+    <div id="confirm-dialog" class="modal">
+        <div class="modal-content confirm-content">
+            <h3 id="confirm-title">确认操作</h3>
+            <p id="confirm-message"></p>
+            <div class="confirm-actions">
+                <button id="confirm-yes" class="action-btn">确认</button>
+                <button id="confirm-no" class="action-btn">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 常用工作项管理模态框 -->
+    <div id="common-tasks-modal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h3>管理常用工作项</h3>
+            <div class="common-tasks-form">
+                <div class="add-common-task">
+                    <input type="text" id="new-common-task" placeholder="输入常用工作项..." class="common-task-input">
+                    <button id="add-common-task" class="action-btn">添加</button>
+                </div>
+                <div id="manage-common-tasks-list" class="manage-common-tasks-list">
+                    <!-- 管理常用工作项列表 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 日记导出模态框 -->
+    <div id="diary-export-modal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h3>导出日记</h3>
+            <div class="export-form">
+                <div class="date-range">
+                    <div class="date-range-row">
+                        <label>开始日期：</label>
+                        <input type="date" id="export-start-date" class="date-input">
+                    </div>
+                    <div class="date-range-row">
+                        <label>结束日期：</label>
+                        <input type="date" id="export-end-date" class="date-input">
+                    </div>
+                </div>
+                <div class="export-options">
+                    <button id="export-current-day" class="action-btn">导出当天</button>
+                    <button id="export-all-diaries" class="action-btn">导出所有日记</button>
+                    <button id="export-date-range" class="action-btn">导出指定范围</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 日记清空模态框 -->
+    <div id="diary-clear-modal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h3>清空日记</h3>
+            <div class="clear-form">
+                <div class="date-range">
+                    <div class="date-range-row">
+                        <label>开始日期：</label>
+                        <input type="date" id="clear-start-date" class="date-input">
+                    </div>
+                    <div class="date-range-row">
+                        <label>结束日期：</label>
+                        <input type="date" id="clear-end-date" class="date-input">
+                    </div>
+                </div>
+                <div class="clear-options">
+                    <button id="clear-current-day" class="action-btn danger">清空当天</button>
+                    <button id="clear-all-diaries" class="action-btn danger">清空所有日记</button>
+                    <button id="clear-date-range" class="action-btn danger">清空指定范围</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/utils.js?v=1.0.12"></script>
+    <script src="js/storage.js?v=1.0.12"></script>
+    <script src="js/diary.js?v=1.0.12"></script>
+    <script src="js/plans.js?v=1.0.12"></script>
+    <script src="js/app.js?v=1.0.12"></script>
+</body>
+</html>
